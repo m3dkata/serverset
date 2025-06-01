@@ -865,18 +865,28 @@ system_configuration() {
 }
 # Add this function before update_serverset()
 check_internet() {
-    if ! ping -c 1 github.com >/dev/null 2>&1; then
-        error "Няма връзка с интернет или GitHub не е достъпен!"
+    log "Проверка на интернет връзката..."
+    
+    if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+        error "Няма интернет връзка!"
         return 1
     fi
+    
+    if ! ping -c 1 github.com >/dev/null 2>&1; then
+        error "GitHub не е достъпен!"
+        return 1
+    fi
+    
+    log "Интернет връзката е OK"
     return 0
 }
+
 
 update_serverset() {
     clear
     echo -e "${CYAN}🔄 АКТУАЛИЗИРАНЕ НА SERVERSET${NC}"
     echo ""
-
+    
     # Check internet connectivity
     if ! check_internet; then
         read -p "Натиснете Enter за връщане..."
@@ -890,7 +900,7 @@ update_serverset() {
     mkdir -p "$BACKUP_DIR"
     
     # Backup current serverset and all scripts
-    cp "$0" "$BACKUP_DIR/"
+    cp "$0" "$BACKUP_DIR/" 2>/dev/null || true
     cp "$SCRIPT_DIR"/*.sh "$BACKUP_DIR/" 2>/dev/null || true
     
     log "Backup създаден в: $BACKUP_DIR"
@@ -900,33 +910,63 @@ update_serverset() {
     rm -rf "$TEMP_DIR"
     mkdir -p "$TEMP_DIR"
     
-    # Download latest version from GitHub
-    log "Изтегляне на най-новата версия..."
-    
-    # Download main serverset.sh
-    if ! wget -q -O "$TEMP_DIR/serverset.sh" "https://raw.githubusercontent.com/m3dkata/serverset/main/serverset.sh"; then
-        error "Неуспешно изтегляне на serverset.sh!"
-        rm -rf "$TEMP_DIR"
-        read -p "Натиснете Enter за връщане..."
-        return
-    fi
-    
-    # Download other shell scripts (add more as needed)
+    # All shell scripts in your repository
     SCRIPTS=(
-        "system-backup.sh"
-        "health-check.sh" 
-        "raid-manager.sh"
-        "server-dashboard.sh"
+        "serverset.sh"
+        "complete-setup.sh"
+        "coolify-setup-guide.sh"
+        "create-emergency-card.sh"
+        "create-recovery-docs.sh"
+        "disk-health-monitor.sh"
         "emergency-restore.sh"
+        "final-optimization.sh"
+        "final-validation.sh"
+        "health-check.sh"
+        "install-coolify.sh"
+        "installation-summary.sh"
+        "maintenance-calendar.sh"
+        "performance-tuning.sh"
+        "post-install-checklist.sh"
+        "quick-commands.sh"
+        "raid-manager.sh"
+        "security-hardening.sh"
+        "server-dashboard.sh"
+        "setup-backup.sh"
+        "setup-cron.sh"
+        "setup-raid.sh"
+        "setup-server.sh"
+        "setup-ssl.sh"
+        "success-banner.sh"
+        "system-backup.sh"
+        "system-info.sh"
+        "troubleshooting-guide.sh"
+        "verify-setup.sh"
+        "weekly-maintenance.sh"
     )
     
+    # Download all scripts from GitHub
+    log "Изтегляне на скриптове от GitHub..."
+    
+    DOWNLOADED_COUNT=0
+    FAILED_COUNT=0
+    
     for script in "${SCRIPTS[@]}"; do
+        echo -n "  Изтегляне на $script... "
+        
         if wget -q -O "$TEMP_DIR/$script" "https://raw.githubusercontent.com/m3dkata/serverset/main/$script"; then
-            log "Изтеглен: $script"
+            echo -e "${GREEN}✅${NC}"
+            ((DOWNLOADED_COUNT++))
         else
-            warn "Неуспешно изтегляне на: $script (може да не съществува в repo)"
+            echo -e "${RED}❌${NC}"
+            ((FAILED_COUNT++))
         fi
     done
+    
+    echo ""
+    log "Изтеглени: $DOWNLOADED_COUNT файла"
+    if [ $FAILED_COUNT -gt 0 ]; then
+        warn "Неуспешни: $FAILED_COUNT файла"
+    fi
     
     # Check if main script was downloaded successfully
     if [ ! -f "$TEMP_DIR/serverset.sh" ]; then
@@ -947,93 +987,90 @@ update_serverset() {
     fi
     
     echo ""
-    echo "Текуща версия: $SCRIPT_VERSION"
-    echo "Нова версия: $NEW_VERSION"
+    echo -e "${BLUE}Текуща версия: ${YELLOW}$SCRIPT_VERSION${NC}"
+    echo -e "${BLUE}Нова версия: ${GREEN}$NEW_VERSION${NC}"
+    echo ""
+    
+    # Show downloaded files
+    echo -e "${CYAN}Изтеглени файлове:${NC}"
+    ls -la "$TEMP_DIR/" | grep "\.sh$" | awk '{printf "  %-30s %s\n", $9, $5" bytes"}'
     echo ""
     
     if [ "$NEW_VERSION" != "$SCRIPT_VERSION" ]; then
         log "Намерена нова версия: $NEW_VERSION"
-        echo ""
-        echo "Файлове за актуализиране:"
-        ls -la "$TEMP_DIR/"
-        echo ""
-        read -p "Актуализиране? (yes/no): " confirm
+        read -p "Актуализиране на всички скриптове? (yes/no): " confirm
+    else
+        log "Същата версия, но може да има актуализирани скриптове"
+        read -p "Принудително актуализиране на всички скриптове? (yes/no): " confirm
+    fi
+    
+    if [ "$confirm" = "yes" ]; then
+        log "Актуализиране на файловете..."
         
-        if [ "$confirm" = "yes" ]; then
-            log "Актуализиране на файловете..."
-            
-            # Make scripts executable
-            chmod +x "$TEMP_DIR"/*.sh
-            
-            # Update main serverset script
-            if [ -f "$TEMP_DIR/serverset.sh" ]; then
-                cp "$TEMP_DIR/serverset.sh" "$0"
-                cp "$TEMP_DIR/serverset.sh" "$SCRIPT_DIR/serverset.sh"
-                log "✅ serverset.sh актуализиран"
-            fi
-            
-            # Update other scripts
-            for script in "${SCRIPTS[@]}"; do
-                if [ -f "$TEMP_DIR/$script" ]; then
+        UPDATED_COUNT=0
+        
+        # Update all downloaded scripts
+        for script in "${SCRIPTS[@]}"; do
+            if [ -f "$TEMP_DIR/$script" ]; then
+                # Make executable
+                chmod +x "$TEMP_DIR/$script"
+                
+                if [ "$script" = "serverset.sh" ]; then
+                    # Update main script (current running script and the one in SCRIPT_DIR)
+                    cp "$TEMP_DIR/$script" "$0"
                     cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"
-                    chmod +x "$SCRIPT_DIR/$script"
-                    log "✅ $script актуализиран"
+                    echo -e "  ${GREEN}✅ $script (main script)${NC}"
+                else
+                    # Update other scripts
+                    cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"
+                    echo -e "  ${GREEN}✅ $script${NC}"
                 fi
-            done
-            
-            log "ServerSet актуализиран до версия $NEW_VERSION!"
-            log "Backup на старите файлове: $BACKUP_DIR"
-            echo ""
-            echo -e "${GREEN}🎉 Актуализирането завърши успешно!${NC}"
-            echo ""
-            echo "Промени могат да включват:"
-            echo "• Нови функции"
-            echo "• Поправки на грешки"  
-            echo "• Подобрения в сигурността"
-            echo "• Актуализирани скриптове"
-            echo ""
-            read -p "Рестартиране на ServerSet с новата версия? (yes/no): " restart
-            
-            if [ "$restart" = "yes" ]; then
-                rm -rf "$TEMP_DIR"
-                log "Рестартиране..."
-                exec "$0"
+                ((UPDATED_COUNT++))
             fi
-        else
-            log "Актуализирането е отказано"
+        done
+        
+        echo ""
+        log "Актуализирани $UPDATED_COUNT скрипта!"
+        log "Backup на старите файлове: $BACKUP_DIR"
+        
+        # Update configuration to reflect new version
+        if [ "$NEW_VERSION" != "$SCRIPT_VERSION" ]; then
+            SCRIPT_VERSION="$NEW_VERSION"
+            save_config
+        fi
+        
+        echo ""
+        echo -e "${GREEN}🎉 АКТУАЛИЗИРАНЕТО ЗАВЪРШИ УСПЕШНО! 🎉${NC}"
+        echo ""
+        echo -e "${CYAN}Какво е ново:${NC}"
+        echo "• Всички скриптове са актуализирани"
+        echo "• Нови функции и подобрения"
+        echo "• Поправки на грешки"
+        echo "• Подобрена сигурност и стабилност"
+        echo ""
+        echo -e "${YELLOW}Важно:${NC}"
+        echo "• Backup файлове: $BACKUP_DIR"
+        echo "• Всички скриптове са готови за използване"
+        echo "• Конфигурацията е запазена"
+        echo ""
+        
+        read -p "Рестартиране на ServerSet с новата версия? (yes/no): " restart
+        
+        if [ "$restart" = "yes" ]; then
+            rm -rf "$TEMP_DIR"
+            log "Рестартиране с нова версия..."
+            sleep 2
+            exec "$0"
         fi
     else
-        log "Вече използвате най-новата версия ($SCRIPT_VERSION)"
-        
-        # Still offer to force update
-        echo ""
-        read -p "Принудително актуализиране? (yes/no): " force_update
-        
-        if [ "$force_update" = "yes" ]; then
-            log "Принудително актуализиране..."
-            
-            chmod +x "$TEMP_DIR"/*.sh
-            
-            # Update all files
-            cp "$TEMP_DIR/serverset.sh" "$0"
-            cp "$TEMP_DIR/serverset.sh" "$SCRIPT_DIR/serverset.sh"
-            
-            for script in "${SCRIPTS[@]}"; do
-                if [ -f "$TEMP_DIR/$script" ]; then
-                    cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"
-                    chmod +x "$SCRIPT_DIR/$script"
-                    log "✅ $script актуализиран"
-                fi
-            done
-            
-            log "Принудителното актуализиране завърши!"
-        fi
+        log "Актуализирането е отказано"
     fi
     
     # Cleanup
     rm -rf "$TEMP_DIR"
     read -p "Натиснете Enter за връщане..."
 }
+
 
 
 uninstall_system() {
