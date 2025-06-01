@@ -1,6 +1,6 @@
 #!/bin/bash
 # ServerSet - Interactive Ubuntu Server Management Tool
-# Version: 3.1.1
+# Version: 3.1.2
 # Usage: git clone https://github.com/m3dkata/serverset.git && chmod +x serverset/*.sh && ./serverset/serverset.sh
 
 set -e
@@ -15,7 +15,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Global variables
-SCRIPT_VERSION="3.1.1"
+SCRIPT_VERSION="3.1.2"
 SCRIPT_DIR="/usr/local/bin"
 CONFIG_FILE="/etc/serverset.conf"
 
@@ -90,9 +90,10 @@ show_menu() {
     
     echo -e "${CYAN}💾 BACKUP И ВЪЗСТАНОВЯВАНЕ:${NC}"
     echo "  11) Ръчно backup"
-    echo "  12) Аварийно възстановяване"
+    echo "  12) Автоматично възстановяване"  # New
     echo "  13) Управление на backups"
-    echo "  14) Тестване на restore"
+    echo "  14) Бързо възстановяване"        # Updated
+    echo "  15) Проверка на backup space"    # New
     echo ""
     
     echo -e "${CYAN}🚀 COOLIFY УПРАВЛЕНИЕ:${NC}"
@@ -927,8 +928,12 @@ update_serverset() {
     echo -e "${CYAN}🔄 АКТУАЛИЗИРАНЕ НА SERVERSET${NC}"
     echo ""
     
+    # Temporarily disable exit on error for this function
+    set +e
+    
     # Check internet connectivity
     if ! check_internet; then
+        set -e  # Re-enable exit on error
         read -p "Натиснете Enter за връщане..."
         return
     fi
@@ -940,8 +945,8 @@ update_serverset() {
     mkdir -p "$BACKUP_DIR"
     
     # Backup current serverset and all scripts
-    cp "$0" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$SCRIPT_DIR"/*.sh "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$0" "$BACKUP_DIR/" 2>/dev/null
+    cp "$SCRIPT_DIR"/*.sh "$BACKUP_DIR/" 2>/dev/null
     
     log "Backup създаден в: $BACKUP_DIR"
     
@@ -984,34 +989,54 @@ update_serverset() {
         "weekly-maintenance.sh"
     )
     
-    # Download all scripts from GitHub FIRST
+    # Download all scripts from GitHub
     log "Изтегляне на скриптове от GitHub..."
+    echo "Общо файлове за изтегляне: ${#SCRIPTS[@]}"
+    echo ""
     
     DOWNLOADED_COUNT=0
     FAILED_COUNT=0
     
-    for script in "${SCRIPTS[@]}"; do
-        echo -n "  Изтегляне на $script... "
+    for i in "${!SCRIPTS[@]}"; do
+        script="${SCRIPTS[$i]}"
+        progress=$((i + 1))
+        total=${#SCRIPTS[@]}
         
-        if wget -q -O "$TEMP_DIR/$script" "https://raw.githubusercontent.com/m3dkata/serverset/main/$script"; then
-            echo -e "${GREEN}✅${NC}"
+        printf "  [%2d/%2d] Изтегляне на %-30s ... " "$progress" "$total" "$script"
+        
+        # Use curl as fallback if wget fails
+        if wget -q --timeout=10 --tries=2 -O "$TEMP_DIR/$script" "https://raw.githubusercontent.com/m3dkata/serverset/main/$script" 2>/dev/null; then
+            printf "${GREEN}✅${NC}\n"
+            ((DOWNLOADED_COUNT++))
+        elif curl -s --max-time 10 --retry 1 -o "$TEMP_DIR/$script" "https://raw.githubusercontent.com/m3dkata/serverset/main/$script" 2>/dev/null; then
+            printf "${GREEN}✅ (curl)${NC}\n"
             ((DOWNLOADED_COUNT++))
         else
-            echo -e "${RED}❌${NC}"
+            printf "${RED}❌${NC}\n"
             ((FAILED_COUNT++))
         fi
+        
+        # Small delay to prevent overwhelming the server
+        sleep 0.1
     done
     
     echo ""
-    log "Изтеглени: $DOWNLOADED_COUNT файла"
-    if [ $FAILED_COUNT -gt 0 ]; then
-        warn "Неуспешни: $FAILED_COUNT файла"
-    fi
+    log "Резултат: $DOWNLOADED_COUNT успешни, $FAILED_COUNT неуспешни"
     
     # Check if main script was downloaded successfully
     if [ ! -f "$TEMP_DIR/serverset.sh" ]; then
         error "Основният скрипт не беше изтеглен!"
         rm -rf "$TEMP_DIR"
+        set -e  # Re-enable exit on error
+        read -p "Натиснете Enter за връщане..."
+        return
+    fi
+    
+    # Verify downloaded file is not empty
+    if [ ! -s "$TEMP_DIR/serverset.sh" ]; then
+        error "Изтегленият serverset.sh е празен!"
+        rm -rf "$TEMP_DIR"
+        set -e  # Re-enable exit on error
         read -p "Натиснете Enter за връщане..."
         return
     fi
@@ -1021,7 +1046,10 @@ update_serverset() {
     
     if [ -z "$NEW_VERSION" ]; then
         error "Не може да се определи новата версия!"
+        echo "Проверка на изтегления файл:"
+        head -20 "$TEMP_DIR/serverset.sh"
         rm -rf "$TEMP_DIR"
+        set -e  # Re-enable exit on error
         read -p "Натиснете Enter за връщане..."
         return
     fi
@@ -1032,8 +1060,13 @@ update_serverset() {
     echo ""
     
     # Show downloaded files
-    echo -e "${CYAN}Изтеглени файлове:${NC}"
-    ls -la "$TEMP_DIR/" | grep "\.sh$" | awk '{printf "  %-30s %s\n", $9, $5" bytes"}'
+    echo -e "${CYAN}Успешно изтеглени файлове:${NC}"
+    for script in "${SCRIPTS[@]}"; do
+        if [ -f "$TEMP_DIR/$script" ] && [ -s "$TEMP_DIR/$script" ]; then
+            size=$(stat -c%s "$TEMP_DIR/$script" 2>/dev/null || echo "0")
+            printf "  %-30s %s bytes\n" "$script" "$size"
+        fi
+    done
     echo ""
     
     if [ "$NEW_VERSION" != "$SCRIPT_VERSION" ]; then
@@ -1051,23 +1084,29 @@ update_serverset() {
         
         # Update all downloaded scripts EXCEPT the main script first
         for script in "${SCRIPTS[@]}"; do
-            if [ "$script" != "serverset.sh" ] && [ -f "$TEMP_DIR/$script" ]; then
+            if [ "$script" != "serverset.sh" ] && [ -f "$TEMP_DIR/$script" ] && [ -s "$TEMP_DIR/$script" ]; then
                 # Make executable
                 chmod +x "$TEMP_DIR/$script"
                 
                 # Update script
-                cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"
-                echo -e "  ${GREEN}✅ $script${NC}"
-                ((UPDATED_COUNT++))
+                if cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"; then
+                    echo -e "  ${GREEN}✅ $script${NC}"
+                    ((UPDATED_COUNT++))
+                else
+                    echo -e "  ${RED}❌ $script (copy failed)${NC}"
+                fi
             fi
         done
         
         # Update main script LAST to avoid interrupting execution
-        if [ -f "$TEMP_DIR/serverset.sh" ]; then
+        if [ -f "$TEMP_DIR/serverset.sh" ] && [ -s "$TEMP_DIR/serverset.sh" ]; then
             chmod +x "$TEMP_DIR/serverset.sh"
-            cp "$TEMP_DIR/serverset.sh" "$SCRIPT_DIR/serverset.sh"
-            echo -e "  ${GREEN}✅ serverset.sh (main script)${NC}"
-            ((UPDATED_COUNT++))
+            if cp "$TEMP_DIR/serverset.sh" "$SCRIPT_DIR/serverset.sh"; then
+                echo -e "  ${GREEN}✅ serverset.sh (main script)${NC}"
+                ((UPDATED_COUNT++))
+            else
+                echo -e "  ${RED}❌ serverset.sh (copy failed)${NC}"
+            fi
         fi
         
         echo ""
@@ -1076,8 +1115,8 @@ update_serverset() {
         
         # Update configuration to reflect new version
         if [ "$NEW_VERSION" != "$SCRIPT_VERSION" ]; then
-            SCRIPT_VERSION="$NEW_VERSION"
-            save_config
+            # Create a temporary config update
+            sed -i "s/SCRIPT_VERSION=\"$SCRIPT_VERSION\"/SCRIPT_VERSION=\"$NEW_VERSION\"/" "$CONFIG_FILE" 2>/dev/null || true
         fi
         
         echo ""
@@ -1101,7 +1140,8 @@ update_serverset() {
             rm -rf "$TEMP_DIR"
             log "Рестартиране с нова версия..."
             sleep 2
-            # Use the updated script from SCRIPT_DIR instead of current running script
+            set -e  # Re-enable exit on error
+            # Use the updated script from SCRIPT_DIR
             exec "$SCRIPT_DIR/serverset.sh"
         fi
     else
@@ -1110,8 +1150,10 @@ update_serverset() {
     
     # Cleanup
     rm -rf "$TEMP_DIR"
+    set -e  # Re-enable exit on error
     read -p "Натиснете Enter за връщане..."
 }
+
 
 
 uninstall_system() {
@@ -1225,9 +1267,16 @@ main() {
             9) verify_setup ;;
             10) $SCRIPT_DIR/health-check.sh; read -p "Enter..." ;;
             11) manual_backup ;;
-            12) emergency_restore ;;
+            12) 
+                if [ -f "$SCRIPT_DIR/automated-recovery.sh" ]; then
+                    $SCRIPT_DIR/automated-recovery.sh
+                else
+                    echo "automated-recovery.sh не е намерен!"
+                fi
+                read -p "Enter..."
+                ;;
             13) ls -la /mnt/backup/system/; read -p "Enter..." ;;
-            14) echo "Test restore функция в разработка"; read -p "Enter..." ;;
+            14) emergency_restore ;;
             15) coolify_management ;;
             16) 
                 if check_coolify_installation; then

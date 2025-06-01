@@ -1,81 +1,174 @@
 #!/bin/bash
-# System Backup Script / Скрипт за системно резервно копие
+# Smart System Backup with Rotation
+# Keeps: 2 full backups + 4 incremental backups
 
-BACKUP_DIR="/mnt/backup/system"
 LOG_FILE="/var/log/system-backup.log"
-DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_BASE="/mnt/backup/system"
+CONFIG_FILE="/etc/serverset.conf"
 
-# Logging function
+# Load configuration
+source "$CONFIG_FILE" 2>/dev/null || true
+
 log_backup() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
 }
 
-log_backup "Започване на системно резервно копие..."
+# Check available space
+check_space() {
+    AVAILABLE=$(df /mnt/backup | tail -1 | awk '{print $4}')
+    AVAILABLE_GB=$((AVAILABLE / 1024 / 1024))
+    
+    log_backup "Налично пространство: ${AVAILABLE_GB}GB"
+    
+    if [ $AVAILABLE_GB -lt 100 ]; then
+        log_backup "ПРЕДУПРЕЖДЕНИЕ: Малко свободно място!"
+        cleanup_old_backups
+    fi
+}
 
-# Create backup directory for this date
-mkdir -p "$BACKUP_DIR/$DATE"
+# Cleanup old backups
+cleanup_old_backups() {
+    log_backup "Изчистване на стари backups..."
+    
+    # Keep only last 2 full backups
+    ls -t "$BACKUP_BASE"/full_* 2>/dev/null | tail -n +3 | xargs -r rm -rf
+    
+    # Keep only last 4 incremental backups  
+    ls -t "$BACKUP_BASE"/incr_* 2>/dev/null | tail -n +5 | xargs -r rm -rf
+    
+    log_backup "Стари backups изчистени"
+}
 
-# Backup system files / Резервно копие на системни файлове
-log_backup "Резервно копие на системни файлове..."
-rsync -avH --exclude='/proc/*' --exclude='/sys/*' --exclude='/dev/*' \
-      --exclude='/tmp/*' --exclude='/mnt/*' --exclude='/media/*' \
-      --exclude='/var/cache/*' --exclude='/var/tmp/*' \
-      / "$BACKUP_DIR/$DATE/system/" 2>&1 | tee -a $LOG_FILE
+# Determine backup type
+get_backup_type() {
+    FULL_COUNT=$(ls -1 "$BACKUP_BASE"/full_* 2>/dev/null | wc -l)
+    LAST_FULL=$(ls -t "$BACKUP_BASE"/full_* 2>/dev/null | head -1)
+    
+    if [ $FULL_COUNT -eq 0 ]; then
+        echo "full"
+    elif [ $FULL_COUNT -ge 2 ]; then
+        echo "incremental"
+    else
+        # Check if last full backup is older than 2 weeks
+        if [ -n "$LAST_FULL" ]; then
+            LAST_FULL_DATE=$(basename "$LAST_FULL" | cut -d'_' -f2)
+            DAYS_OLD=$(( ($(date +%s) - $(date -d "$LAST_FULL_DATE" +%s)) / 86400 ))
+            
+            if [ $DAYS_OLD -gt 14 ]; then
+                echo "full"
+            else
+                echo "incremental"
+            fi
+        else
+            echo "full"
+        fi
+    fi
+}
 
-# Backup RAID configuration / Резервно копие на RAID конфигурацията
-log_backup "Резервно копие на RAID конфигурация..."
-cp /etc/mdadm/mdadm.conf "$BACKUP_DIR/$DATE/"
-mdadm --detail --scan > "$BACKUP_DIR/$DATE/mdadm-scan.conf"
-
-# Backup Docker data / Резервно копие на Docker данни
-log_backup "Резервно копие на Docker данни..."
-if [ -d "/var/lib/docker" ]; then
-    rsync -av /var/lib/docker/ "$BACKUP_DIR/$DATE/docker/" 2>&1 | tee -a $LOG_FILE
-fi
-
-# Backup Coolify data / Резервно копие на Coolify данни
-log_backup "Резервно копие на Coolify данни..."
-if [ -d "/data/coolify" ]; then
-    rsync -av /data/coolify/ "$BACKUP_DIR/$DATE/coolify/" 2>&1 | tee -a $LOG_FILE
-fi
-
-# Create system image / Създаване на системен образ
-log_backup "Създаване на системен образ..."
-dd if=/dev/md0 bs=64K | gzip > "$BACKUP_DIR/$DATE/system-image.gz" 2>&1 | tee -a $LOG_FILE
-
-# Clean old backups (keep last 4 weeks) / Изчистване на стари backup-и
-log_backup "Изчистване на стари резервни копия..."
-find "$BACKUP_DIR" -type d -name "20*" -mtime +28 -exec rm -rf {} \; 2>/dev/null
-
-# Create restore script / Създаване на скрипт за възстановяване
-cat > "$BACKUP_DIR/$DATE/restore.sh" << 'EOF'
-#!/bin/bash
-# System Restore Script / Скрипт за възстановяване на системата
-
-BACKUP_DATE=$(basename $(dirname $(readlink -f $0)))
-BACKUP_DIR="/mnt/backup/system/$BACKUP_DATE"
-
-echo "Възстановяване на система от $BACKUP_DATE"
-echo "ВНИМАНИЕ: Това ще презапише текущата система!"
-read -p "Продължаване? (yes/no): " confirm
-
-if [ "$confirm" != "yes" ]; then
-    echo "Отказано."
-    exit 1
-fi
-
-# Restore system image
-echo "Възстановяване на системен образ..."
-gunzip -c "$BACKUP_DIR/system-image.gz" | dd of=/dev/md0 bs=64K
-
-echo "Възстановяването завърши. Рестартирайте системата."
+# Full backup
+do_full_backup() {
+    DATE=$(date +%Y%m%d_%H%M%S)
+    BACKUP_DIR="$BACKUP_BASE/full_$DATE"
+    
+    log_backup "Започване на пълно backup..."
+    mkdir -p "$BACKUP_DIR"
+    
+    # Create system image
+    log_backup "Създаване на системен образ..."
+    dd if=/dev/md0 bs=64K status=progress | gzip > "$BACKUP_DIR/system-image.gz"
+    
+    # Backup configurations
+    log_backup "Backup на конфигурации..."
+    mkdir -p "$BACKUP_DIR/configs"
+    tar -czf "$BACKUP_DIR/configs/etc.tar.gz" /etc/ 2>/dev/null || true
+    tar -czf "$BACKUP_DIR/configs/coolify.tar.gz" /data/coolify/ 2>/dev/null || true
+    
+    # RAID configuration
+    cp /etc/mdadm/mdadm.conf "$BACKUP_DIR/" 2>/dev/null || true
+    mdadm --detail --scan > "$BACKUP_DIR/mdadm-scan.conf"
+    
+    # Create restore info
+    cat > "$BACKUP_DIR/restore-info.txt" << EOF
+Backup Type: Full System Image
+Date: $(date)
+RAID Device: /dev/md0
+System Size: $(df -h /dev/md0 | tail -1 | awk '{print $2}')
+Compressed Size: $(du -h "$BACKUP_DIR/system-image.gz" | cut -f1)
+Drives: $DRIVE1, $DRIVE2
 EOF
+    
+    log_backup "Пълното backup завърши: $BACKUP_DIR"
+}
 
-chmod +x "$BACKUP_DIR/$DATE/restore.sh"
+# Incremental backup
+do_incremental_backup() {
+    DATE=$(date +%Y%m%d_%H%M%S)
+    BACKUP_DIR="$BACKUP_BASE/incr_$DATE"
+    LAST_FULL=$(ls -t "$BACKUP_BASE"/full_* 2>/dev/null | head -1)
+    
+    if [ -z "$LAST_FULL" ]; then
+        log_backup "Няма пълно backup! Правя пълно backup..."
+        do_full_backup
+        return
+    fi
+    
+    log_backup "Започване на инкрементално backup..."
+    mkdir -p "$BACKUP_DIR"
+    
+    # Find changes since last full backup
+    REFERENCE_DATE=$(basename "$LAST_FULL" | cut -d'_' -f2-3 | tr '_' ' ')
+    
+    # Backup only changed files
+    log_backup "Backup на променени файлове от $REFERENCE_DATE..."
+    
+    # System files changed since last full backup
+    find /etc /data/coolify /var/lib/docker -newer "$LAST_FULL/restore-info.txt" -type f 2>/dev/null | \
+    tar -czf "$BACKUP_DIR/changed-files.tar.gz" -T - 2>/dev/null || true
+    
+    # Database dumps and important configs
+    tar -czf "$BACKUP_DIR/current-configs.tar.gz" /etc/ /data/coolify/ 2>/dev/null || true
+    
+    # Docker container states
+    docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" > "$BACKUP_DIR/docker-containers.txt"
+    
+    # Create restore info
+    cat > "$BACKUP_DIR/restore-info.txt" << EOF
+Backup Type: Incremental
+Date: $(date)
+Reference Full Backup: $(basename "$LAST_FULL")
+Changed Files: $(tar -tzf "$BACKUP_DIR/changed-files.tar.gz" 2>/dev/null | wc -l)
+EOF
+    
+    log_backup "Инкременталното backup завърши: $BACKUP_DIR"
+}
 
-log_backup "Системното резервно копие завърши успешно!"
+# Main backup logic
+main() {
+    log_backup "Започване на автоматично backup..."
+    
+    # Check space first
+    check_space
+    
+    # Determine backup type
+    BACKUP_TYPE=$(get_backup_type)
+    log_backup "Тип backup: $BACKUP_TYPE"
+    
+    # Perform backup
+    if [ "$BACKUP_TYPE" = "full" ]; then
+        do_full_backup
+    else
+        do_incremental_backup
+    fi
+    
+    # Cleanup after backup
+    cleanup_old_backups
+    
+    # Final space check
+    AVAILABLE=$(df /mnt/backup | tail -1 | awk '{print $4}')
+    AVAILABLE_GB=$((AVAILABLE / 1024 / 1024))
+    log_backup "Останало пространство: ${AVAILABLE_GB}GB"
+    
+    log_backup "Backup завърши успешно!"
+}
 
-# Send notification (optional) / Изпращане на известие
-if command -v mail &> /dev/null; then
-    echo "Системното резервно копие завърши успешно на $(date)" | mail -s "Backup Complete" root
-fi
+main "$@"

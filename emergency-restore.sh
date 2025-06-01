@@ -1,51 +1,62 @@
 #!/bin/bash
-# Emergency System Restore / Аварийно възстановяване на системата
+# Quick Emergency Restore (simplified version)
 
-echo "=== АВАРИЙНО ВЪЗСТАНОВЯВАНЕ НА СИСТЕМАТА ==="
-echo "Този скрипт ще възстанови системата от последното резервно копие"
+echo "=== БЪРЗО АВАРИЙНО ВЪЗСТАНОВЯВАНЕ ==="
+echo ""
+echo "За пълно автоматично възстановяване използвайте:"
+echo "  automated-recovery.sh"
+echo ""
+echo "Този скрипт е за бързо възстановяване на работеща система."
 echo ""
 
-# List available backups / Показване на налични backup-и
-echo "Налични резервни копия:"
-ls -la /mnt/backup/system/ | grep "^d" | tail -10
+# Check if backup drive is mounted
+if [ ! -d "/mnt/backup/system" ]; then
+    echo "ГРЕШКА: Backup диск не е монтиран!"
+    echo "Монтирайте го първо: mount /dev/sdX /mnt/backup"
+    exit 1
+fi
+
+echo "Налични backups:"
+ls -la /mnt/backup/system/full_* | while read line; do
+    backup_name=$(echo "$line" | awk '{print $9}')
+    backup_date=$(basename "$backup_name" | cut -d'_' -f2-3 | tr '_' ' ')
+    if [ -f "$backup_name/system-image.gz" ]; then
+        image_size=$(du -h "$backup_name/system-image.gz" | cut -f1)
+        echo "  📁 $backup_date - $image_size"
+    fi
+done
 
 echo ""
-read -p "Въведете датата на backup-а за възстановяване (YYYYMMDD_HHMMSS): " BACKUP_DATE
+read -p "Backup дата (YYYYMMDD_HHMMSS): " BACKUP_DATE
 
-BACKUP_PATH="/mnt/backup/system/$BACKUP_DATE"
-
+BACKUP_PATH="/mnt/backup/system/full_$BACKUP_DATE"
 if [ ! -d "$BACKUP_PATH" ]; then
-    echo "ГРЕШКА: Backup-ът $BACKUP_DATE не съществува!"
+    echo "ГРЕШКА: Backup не съществува!"
+    exit 1
+fi
+
+if [ ! -f "$BACKUP_PATH/system-image.gz" ]; then
+    echo "ГРЕШКА: System image не съществува!"
     exit 1
 fi
 
 echo ""
-echo "ВНИМАНИЕ: Това ще презапише напълно текущата система!"
-echo "Backup път: $BACKUP_PATH"
-echo ""
-read -p "Сигурни ли сте? Напишете 'YES' за потвърждение: " CONFIRM
-
+echo "ВНИМАНИЕ: Това ще презапише /dev/md0!"
+read -p "Потвърждение (YES): " CONFIRM
 if [ "$CONFIRM" != "YES" ]; then
-    echo "Операцията е отказана."
     exit 1
 fi
 
-echo "Започване на възстановяването..."
+echo "Спиране на услуги..."
+systemctl stop docker 2>/dev/null || true
 
-# Stop services / Спиране на услугите
-echo "Спиране на услугите..."
-systemctl stop docker
-systemctl stop coolify 2>/dev/null || true
-
-# Restore system image / Възстановяване на системния образ
-echo "Възстановяване на системния образ... (това може да отнеме време)"
-if [ -f "$BACKUP_PATH/system-image.gz" ]; then
-    gunzip -c "$BACKUP_PATH/system-image.gz" | dd of=/dev/md0 bs=64K status=progress
+echo "Възстановяване в ход..."
+if command -v pv >/dev/null; then
+    gunzip -c "$BACKUP_PATH/system-image.gz" | pv | dd of=/dev/md0 bs=64K oflag=direct
 else
-    echo "ГРЕШКА: Системният образ не е намерен!"
-    exit 1
+    gunzip -c "$BACKUP_PATH/system-image.gz" | dd of=/dev/md0 bs=64K status=progress
 fi
 
+sync
 echo ""
-echo "Възстановяването завърши успешно!"
-echo "Моля рестартирайте системата: sudo reboot"
+echo "Възстановяването завърши! Рестартирайте: sudo reboot"

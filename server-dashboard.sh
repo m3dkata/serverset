@@ -44,11 +44,17 @@ fi
 echo ""
 
 # Coolify Status / Coolify статус
-echo "🚀 COOLIFY:"
+echo "🌐 WEB INTERFACES:"
 if curl -f http://localhost:8000 >/dev/null 2>&1; then
     echo "   ✅ Coolify работи - http://$(hostname -I | awk '{print $1}'):8000"
 else
     echo "   ❌ Coolify не отговаря"
+fi
+
+if systemctl is-active --quiet cockpit; then
+    echo "   ✅ Cockpit работи - https://$(hostname -I | awk '{print $1}'):9090"
+else
+    echo "   ❌ Cockpit не отговаря"
 fi
 echo ""
 
