@@ -1,6 +1,6 @@
 #!/bin/bash
 # ServerSet - Interactive Ubuntu Server Management Tool
-# Version: 3.1
+# Version: 3.1.1
 # Usage: git clone https://github.com/m3dkata/serverset.git && chmod +x serverset/*.sh && ./serverset/serverset.sh
 
 set -e
@@ -15,7 +15,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Global variables
-SCRIPT_VERSION="3.1"
+SCRIPT_VERSION="3.1.1"
 SCRIPT_DIR="/usr/local/bin"
 CONFIG_FILE="/etc/serverset.conf"
 
