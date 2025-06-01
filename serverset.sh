@@ -626,6 +626,14 @@ emergency_restore() {
     read -p "Натиснете Enter за връщане..."
 }
 
+check_coolify_installation() {
+    if [ -d "/data/coolify" ] && [ -f "/data/coolify/docker-compose.yml" ]; then
+        return 0  # Coolify is installed
+    else
+        return 1  # Coolify is not installed
+    fi
+}
+
 coolify_management() {
     clear
     echo -e "${CYAN}🚀 COOLIFY УПРАВЛЕНИЕ${NC}"
@@ -648,23 +656,55 @@ coolify_management() {
             fi
             ;;
         2)
-            log "Рестартиране на Coolify..."
-            cd /data/coolify && docker compose restart
+            if [ -d "/data/coolify" ] && [ -f "/data/coolify/docker-compose.yml" ]; then
+                log "Рестартиране на Coolify..."
+                cd /data/coolify && docker compose restart
+            else
+                error "Coolify не е инсталиран или конфигурацията не е намерена!"
+                echo "Пътят /data/coolify/docker-compose.yml не съществува."
+            fi
             ;;
         3)
-            cd /data/coolify && docker compose logs -f
+            if [ -d "/data/coolify" ] && [ -f "/data/coolify/docker-compose.yml" ]; then
+                log "Показване на Coolify логове..."
+                echo "Натиснете Ctrl+C за изход от логовете"
+                sleep 2
+                cd /data/coolify && docker compose logs -f
+            else
+                error "Coolify не е инсталиран или конфигурацията не е намерена!"
+                echo "Пътят /data/coolify/docker-compose.yml не съществува."
+                echo ""
+                echo "Възможни причини:"
+                echo "1. Coolify не е инсталиран - използвайте опция 3 от главното меню"
+                echo "2. Coolify е инсталиран в друга директория"
+                echo "3. Проблем при инсталацията"
+                echo ""
+                echo "За проверка на Docker контейнери:"
+                docker ps -a | grep -i coolify || echo "Няма Coolify контейнери"
+            fi
             ;;
         4)
-            cd /data/coolify && docker compose stop
+            if [ -d "/data/coolify" ] && [ -f "/data/coolify/docker-compose.yml" ]; then
+                log "Спиране на Coolify..."
+                cd /data/coolify && docker compose stop
+            else
+                error "Coolify не е инсталиран или конфигурацията не е намерена!"
+            fi
             ;;
         5)
-            cd /data/coolify && docker compose up -d
+            if [ -d "/data/coolify" ] && [ -f "/data/coolify/docker-compose.yml" ]; then
+                log "Стартиране на Coolify..."
+                cd /data/coolify && docker compose up -d
+            else
+                error "Coolify не е инсталиран или конфигурацията не е намерена!"
+            fi
             ;;
         0) return ;;
     esac
     
     read -p "Натиснете Enter за продължаване..."
 }
+
 
 ssl_setup() {
     clear
@@ -1188,9 +1228,34 @@ main() {
             13) ls -la /mnt/backup/system/; read -p "Enter..." ;;
             14) echo "Test restore функция в разработка"; read -p "Enter..." ;;
             15) coolify_management ;;
-            16) cd /data/coolify && docker compose restart; read -p "Enter..." ;;
-            17) cd /data/coolify && docker compose logs -f ;;
-            18) echo "Отворете: http://$(hostname -I | awk '{print $1}'):8000"; read -p "Enter..." ;;
+            16) 
+                if check_coolify_installation; then
+                    cd /data/coolify && docker compose restart
+                    log "Coolify рестартиран!"
+                else
+                    error "Coolify не е инсталиран!"
+                fi
+                read -p "Enter..." 
+                ;;
+            17) 
+                if check_coolify_installation; then
+                    echo "Натиснете Ctrl+C за изход от логовете"
+                    sleep 2
+                    cd /data/coolify && docker compose logs -f
+                else
+                    error "Coolify не е инсталиран!"
+                    echo "Използвайте опция 3 за инсталиране на Coolify"
+                    read -p "Enter..."
+                fi
+                ;;
+            18) 
+                if check_coolify_installation; then
+                    echo "Отворете: http://$(hostname -I | awk '{print $1}'):8000"
+                else
+                    echo "Coolify не е инсталиран! Използвайте опция 3 за инсталиране."
+                fi
+                read -p "Enter..." 
+                ;;
             19) ssl_setup ;;
             20) ufw status verbose; read -p "Enter..." ;;
             21) fail2ban-client status; read -p "Enter..." ;;
