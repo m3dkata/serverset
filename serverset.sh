@@ -984,7 +984,7 @@ update_serverset() {
         "weekly-maintenance.sh"
     )
     
-    # Download all scripts from GitHub
+    # Download all scripts from GitHub FIRST
     log "Изтегляне на скриптове от GitHub..."
     
     DOWNLOADED_COUNT=0
@@ -1049,25 +1049,26 @@ update_serverset() {
         
         UPDATED_COUNT=0
         
-        # Update all downloaded scripts
+        # Update all downloaded scripts EXCEPT the main script first
         for script in "${SCRIPTS[@]}"; do
-            if [ -f "$TEMP_DIR/$script" ]; then
+            if [ "$script" != "serverset.sh" ] && [ -f "$TEMP_DIR/$script" ]; then
                 # Make executable
                 chmod +x "$TEMP_DIR/$script"
                 
-                if [ "$script" = "serverset.sh" ]; then
-                    # Update main script (current running script and the one in SCRIPT_DIR)
-                    cp "$TEMP_DIR/$script" "$0"
-                    cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"
-                    echo -e "  ${GREEN}✅ $script (main script)${NC}"
-                else
-                    # Update other scripts
-                    cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"
-                    echo -e "  ${GREEN}✅ $script${NC}"
-                fi
+                # Update script
+                cp "$TEMP_DIR/$script" "$SCRIPT_DIR/$script"
+                echo -e "  ${GREEN}✅ $script${NC}"
                 ((UPDATED_COUNT++))
             fi
         done
+        
+        # Update main script LAST to avoid interrupting execution
+        if [ -f "$TEMP_DIR/serverset.sh" ]; then
+            chmod +x "$TEMP_DIR/serverset.sh"
+            cp "$TEMP_DIR/serverset.sh" "$SCRIPT_DIR/serverset.sh"
+            echo -e "  ${GREEN}✅ serverset.sh (main script)${NC}"
+            ((UPDATED_COUNT++))
+        fi
         
         echo ""
         log "Актуализирани $UPDATED_COUNT скрипта!"
@@ -1100,7 +1101,8 @@ update_serverset() {
             rm -rf "$TEMP_DIR"
             log "Рестартиране с нова версия..."
             sleep 2
-            exec "$0"
+            # Use the updated script from SCRIPT_DIR instead of current running script
+            exec "$SCRIPT_DIR/serverset.sh"
         fi
     else
         log "Актуализирането е отказано"
@@ -1110,7 +1112,6 @@ update_serverset() {
     rm -rf "$TEMP_DIR"
     read -p "Натиснете Enter за връщане..."
 }
-
 
 
 uninstall_system() {
