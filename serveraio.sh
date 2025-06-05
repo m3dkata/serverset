@@ -764,7 +764,7 @@ create_aliases() {
 alias dashboard='server-dashboard.sh'
 alias raidstatus='raid-manager.sh status'
 alias backup='system-backup.sh'
-alias serverset='/usr/local/bin/serverset.sh'
+alias serveraio='/usr/local/bin/serveraio.sh'
 alias drives='lsblk -o NAME,SIZE,TYPE,MODEL,MOUNTPOINT'
 alias space='backup-space-manager.sh space'
 EOF

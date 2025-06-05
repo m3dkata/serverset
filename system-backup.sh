@@ -1,174 +1,87 @@
 #!/bin/bash
-# Smart System Backup with Rotation
-# Keeps: 2 full backups + 4 incremental backups
+# Bootable, space-efficient backup using fsarchiver
+# Place this script at /usr/local/bin/system-backup.sh and make it executable
+
+set -e
 
 LOG_FILE="/var/log/system-backup.log"
 BACKUP_BASE="/mnt/backup/system"
-CONFIG_FILE="/etc/serverset.conf"
-
-# Load configuration
-source "$CONFIG_FILE" 2>/dev/null || true
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_BASE/full_${DATE}.fsa"
 
 log_backup() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a $LOG_FILE
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-# Check available space
-check_space() {
-    AVAILABLE=$(df /mnt/backup | tail -1 | awk '{print $4}')
-    AVAILABLE_GB=$((AVAILABLE / 1024 / 1024))
-    
-    log_backup "Налично пространство: ${AVAILABLE_GB}GB"
-    
-    if [ $AVAILABLE_GB -lt 100 ]; then
-        log_backup "ПРЕДУПРЕЖДЕНИЕ: Малко свободно място!"
-        cleanup_old_backups
-    fi
-}
+setup_cron_job() {
+    echo "=== Настройка на автоматичен backup (cron) ==="
+    echo "Изберете периодичност:"
+    echo "  1) Всеки ден"
+    echo "  2) Всяка седмица (изберете ден)"
+    read -p "Избор (1/2): " PERIOD
 
-# Cleanup old backups
-cleanup_old_backups() {
-    log_backup "Изчистване на стари backups..."
-    
-    # Keep only last 2 full backups
-    ls -t "$BACKUP_BASE"/full_* 2>/dev/null | tail -n +3 | xargs -r rm -rf
-    
-    # Keep only last 4 incremental backups  
-    ls -t "$BACKUP_BASE"/incr_* 2>/dev/null | tail -n +5 | xargs -r rm -rf
-    
-    log_backup "Стари backups изчистени"
-}
-
-# Determine backup type
-get_backup_type() {
-    FULL_COUNT=$(ls -1 "$BACKUP_BASE"/full_* 2>/dev/null | wc -l)
-    LAST_FULL=$(ls -t "$BACKUP_BASE"/full_* 2>/dev/null | head -1)
-    
-    if [ $FULL_COUNT -eq 0 ]; then
-        echo "full"
-    elif [ $FULL_COUNT -ge 2 ]; then
-        echo "incremental"
+    if [[ "$PERIOD" == "1" ]]; then
+        read -p "Час (0-23): " HOUR
+        read -p "Минута (0-59): " MIN
+        CRON_EXPR="$MIN $HOUR * * *"
+        DESC="всеки ден в $HOUR:$MIN"
+    elif [[ "$PERIOD" == "2" ]]; then
+        echo "Изберете ден от седмицата:"
+        echo "  0) Неделя"
+        echo "  1) Понеделник"
+        echo "  2) Вторник"
+        echo "  3) Сряда"
+        echo "  4) Четвъртък"
+        echo "  5) Петък"
+        echo "  6) Събота"
+        read -p "Ден (0-6): " DOW
+        read -p "Час (0-23): " HOUR
+        read -p "Минута (0-59): " MIN
+        CRON_EXPR="$MIN $HOUR * * $DOW"
+        DESC="всяка седмица в $HOUR:$MIN, ден $DOW"
     else
-        # Check if last full backup is older than 2 weeks
-        if [ -n "$LAST_FULL" ]; then
-            LAST_FULL_DATE=$(basename "$LAST_FULL" | cut -d'_' -f2)
-            DAYS_OLD=$(( ($(date +%s) - $(date -d "$LAST_FULL_DATE" +%s)) / 86400 ))
-            
-            if [ $DAYS_OLD -gt 14 ]; then
-                echo "full"
-            else
-                echo "incremental"
-            fi
-        else
-            echo "full"
-        fi
+        echo "Невалиден избор."
+        return 1
     fi
+
+    # Remove any previous system-backup.sh cron jobs
+    crontab -l 2>/dev/null | grep -v 'system-backup.sh' > /tmp/cron.tmp.$$
+    echo "$CRON_EXPR /usr/local/bin/system-backup.sh" >> /tmp/cron.tmp.$$
+    crontab /tmp/cron.tmp.$$
+    rm /tmp/cron.tmp.$$
+
+    echo "✅ Автоматичният backup е настроен: $DESC"
 }
 
-# Full backup
-do_full_backup() {
-    DATE=$(date +%Y%m%d_%H%M%S)
-    BACKUP_DIR="$BACKUP_BASE/full_$DATE"
-    
-    log_backup "Започване на пълно backup..."
-    mkdir -p "$BACKUP_DIR"
-    
-    # Create system image
-    log_backup "Създаване на системен образ..."
-    dd if=/dev/md0 bs=64K status=progress | gzip > "$BACKUP_DIR/system-image.gz"
-    
-    # Backup configurations
-    log_backup "Backup на конфигурации..."
-    mkdir -p "$BACKUP_DIR/configs"
-    tar -czf "$BACKUP_DIR/configs/etc.tar.gz" /etc/ 2>/dev/null || true
-    tar -czf "$BACKUP_DIR/configs/coolify.tar.gz" /data/coolify/ 2>/dev/null || true
-    
-    # RAID configuration
-    cp /etc/mdadm/mdadm.conf "$BACKUP_DIR/" 2>/dev/null || true
-    mdadm --detail --scan > "$BACKUP_DIR/mdadm-scan.conf"
-    
-    # Create restore info
-    cat > "$BACKUP_DIR/restore-info.txt" << EOF
-Backup Type: Full System Image
-Date: $(date)
-RAID Device: /dev/md0
-System Size: $(df -h /dev/md0 | tail -1 | awk '{print $2}')
-Compressed Size: $(du -h "$BACKUP_DIR/system-image.gz" | cut -f1)
-Drives: $DRIVE1, $DRIVE2
-EOF
-    
-    log_backup "Пълното backup завърши: $BACKUP_DIR"
-}
+if [[ "$1" == "--setup-cron" ]]; then
+    setup_cron_job
+    exit 0
+fi
 
-# Incremental backup
-do_incremental_backup() {
-    DATE=$(date +%Y%m%d_%H%M%S)
-    BACKUP_DIR="$BACKUP_BASE/incr_$DATE"
-    LAST_FULL=$(ls -t "$BACKUP_BASE"/full_* 2>/dev/null | head -1)
-    
-    if [ -z "$LAST_FULL" ]; then
-        log_backup "Няма пълно backup! Правя пълно backup..."
-        do_full_backup
-        return
-    fi
-    
-    log_backup "Започване на инкрементално backup..."
-    mkdir -p "$BACKUP_DIR"
-    
-    # Find changes since last full backup
-    REFERENCE_DATE=$(basename "$LAST_FULL" | cut -d'_' -f2-3 | tr '_' ' ')
-    
-    # Backup only changed files
-    log_backup "Backup на променени файлове от $REFERENCE_DATE..."
-    
-    # System files changed since last full backup
-    find /etc /data/coolify /var/lib/docker -newer "$LAST_FULL/restore-info.txt" -type f 2>/dev/null | \
-    tar -czf "$BACKUP_DIR/changed-files.tar.gz" -T - 2>/dev/null || true
-    
-    # Database dumps and important configs
-    tar -czf "$BACKUP_DIR/current-configs.tar.gz" /etc/ /data/coolify/ 2>/dev/null || true
-    
-    # Docker container states
-    docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" > "$BACKUP_DIR/docker-containers.txt"
-    
-    # Create restore info
-    cat > "$BACKUP_DIR/restore-info.txt" << EOF
-Backup Type: Incremental
-Date: $(date)
-Reference Full Backup: $(basename "$LAST_FULL")
-Changed Files: $(tar -tzf "$BACKUP_DIR/changed-files.tar.gz" 2>/dev/null | wc -l)
-EOF
-    
-    log_backup "Инкременталното backup завърши: $BACKUP_DIR"
-}
+log_backup "== Започване на fsarchiver backup =="
+mkdir -p "$BACKUP_BASE"
 
-# Main backup logic
-main() {
-    log_backup "Започване на автоматично backup..."
-    
-    # Check space first
-    check_space
-    
-    # Determine backup type
-    BACKUP_TYPE=$(get_backup_type)
-    log_backup "Тип backup: $BACKUP_TYPE"
-    
-    # Perform backup
-    if [ "$BACKUP_TYPE" = "full" ]; then
-        do_full_backup
-    else
-        do_incremental_backup
-    fi
-    
-    # Cleanup after backup
-    cleanup_old_backups
-    
-    # Final space check
-    AVAILABLE=$(df /mnt/backup | tail -1 | awk '{print $4}')
-    AVAILABLE_GB=$((AVAILABLE / 1024 / 1024))
-    log_backup "Останало пространство: ${AVAILABLE_GB}GB"
-    
-    log_backup "Backup завърши успешно!"
-}
+# Save RAID and partition info for restore
+lsblk -f > "$BACKUP_BASE/lsblk_${DATE}.txt"
+blkid > "$BACKUP_BASE/blkid_${DATE}.txt"
+mdadm --detail --scan > "$BACKUP_BASE/mdadm-scan_${DATE}.conf"
+cp /etc/mdadm/mdadm.conf "$BACKUP_BASE/mdadm_${DATE}.conf" 2>/dev/null || true
 
-main "$@"
+# Ensure fsarchiver is installed
+if ! command -v fsarchiver >/dev/null 2>&1; then
+    log_backup "fsarchiver не е инсталиран. Инсталиране..."
+    apt update
+    apt install -y fsarchiver
+fi
+
+# Run fsarchiver (replace /dev/md0 with your root/RAID device if needed)
+log_backup "Стартиране на fsarchiver savefs..."
+fsarchiver savefs "$BACKUP_FILE" /dev/md0
+
+log_backup "== Backup завърши успешно: $BACKUP_FILE =="
+
+# Cleanup old backups (keep last 2 full backups)
+log_backup "Изчистване на стари backups (запазване на последните 2)..."
+ls -t "$BACKUP_BASE"/full_*.fsa 2>/dev/null | tail -n +3 | xargs -r rm -f
+
+log_backup "Backup скриптът приключи."
