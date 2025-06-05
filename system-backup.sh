@@ -76,7 +76,7 @@ fi
 
 # Run fsarchiver (replace /dev/md0 with your root/RAID device if needed)
 log_backup "Стартиране на fsarchiver savefs..."
-fsarchiver savefs "$BACKUP_FILE" /dev/md0
+fsarchiver savefs -A "$BACKUP_FILE" /dev/md0
 
 log_backup "== Backup завърши успешно: $BACKUP_FILE =="
 
