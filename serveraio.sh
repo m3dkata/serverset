@@ -16,7 +16,7 @@ NC='\033[0m'
 
 # Global variables
 SCRIPT_VERSION="4.0"
-SCRIPT_DIR="/usr/local/bin"
+SCRIPT_DIR="."
 CONFIG_FILE="/etc/serverset.conf"
 
 # Utility functions
@@ -109,52 +109,51 @@ detect_drives() {
 }
 
 # Interactive drive selection
-select_drives() {
+select_raid_drives() {
     detect_drives
-    
-    echo -e "${CYAN}🔧 ИЗБОР НА ДИСКОВЕ:${NC}"
+    echo -e "${CYAN}🔧 ИЗБОР НА RAID1 ДИСКОВЕ:${NC}"
     echo ""
-    
-    # RAID drives selection
     if [ -n "$SUGGESTED_DRIVE1" ] && [ -n "$SUGGESTED_DRIVE2" ]; then
         read -p "Първи NVMe диск [$SUGGESTED_DRIVE1]: " DRIVE1
         DRIVE1=${DRIVE1:-$SUGGESTED_DRIVE1}
-        
         read -p "Втори NVMe диск [$SUGGESTED_DRIVE2]: " DRIVE2
         DRIVE2=${DRIVE2:-$SUGGESTED_DRIVE2}
     else
-        echo "Въведете ръчно NVMe дисковете:"
         read -p "Първи NVMe диск (напр. /dev/nvme0n1): " DRIVE1
         read -p "Втори NVMe диск (напр. /dev/nvme1n1): " DRIVE2
     fi
-    
-    # Backup drive selection
+    if [ "$DRIVE1" = "$DRIVE2" ]; then
+        error "RAID дисковете не могат да бъдат еднакви!"
+        return 1
+    fi
+    for drive in "$DRIVE1" "$DRIVE2"; do
+        if [ ! -b "$drive" ]; then
+            error "Диск $drive не съществува!"
+            return 1
+        fi
+    done
+    echo -e "${GREEN}✅ ИЗБРАНИ RAID1 ДИСКОВЕ:${NC}"
+    echo "  RAID1: $DRIVE1 + $DRIVE2"
+}
+
+select_backup_drive() {
+    detect_drives
+    echo -e "${CYAN}🔧 ИЗБОР НА BACKUP ДИСК:${NC}"
+    echo ""
     if [ -n "$SUGGESTED_BACKUP" ]; then
         read -p "Backup диск [$SUGGESTED_BACKUP]: " BACKUP_DRIVE
         BACKUP_DRIVE=${BACKUP_DRIVE:-$SUGGESTED_BACKUP}
     else
         read -p "Backup диск (напр. /dev/sda): " BACKUP_DRIVE
     fi
-    
-    # Validate selections
-    for drive in "$DRIVE1" "$DRIVE2" "$BACKUP_DRIVE"; do
-        if [ ! -b "$drive" ]; then
-            error "Диск $drive не съществува!"
-            return 1
-        fi
-    done
-    
-    if [ "$DRIVE1" = "$DRIVE2" ]; then
-        error "RAID дисковете не могат да бъдат еднакви!"
+    if [ ! -b "$BACKUP_DRIVE" ]; then
+        error "Диск $BACKUP_DRIVE не съществува!"
         return 1
     fi
-    
-    echo ""
-    echo -e "${GREEN}✅ ИЗБРАНИ ДИСКОВЕ:${NC}"
-    echo "  RAID1: $DRIVE1 + $DRIVE2"
+    echo -e "${GREEN}✅ ИЗБРАН BACKUP ДИСК:${NC}"
     echo "  Backup: $BACKUP_DRIVE"
-    echo ""
 }
+
 
 # Main menu
 show_menu() {
@@ -329,7 +328,7 @@ install_docker() {
 
 # Setup RAID1
 setup_raid() {
-    if ! select_drives; then
+    if ! select_raid_drives; then
         return 1
     fi
     
@@ -368,13 +367,14 @@ setup_raid() {
 # Setup backup system
 setup_backup() {
     if [ -z "$BACKUP_DRIVE" ]; then
-        if ! select_drives; then
+        if ! select_backup_drive; then
             return 1
         fi
     fi
     
     log "Настройка на backup диска..."
-    
+    # Unmount if mounted
+    umount "$BACKUP_DRIVE" 2>/dev/null || true
     # Format backup drive
     mkfs.ext4 "$BACKUP_DRIVE"
     
